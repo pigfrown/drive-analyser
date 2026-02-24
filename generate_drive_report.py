@@ -17,7 +17,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 IMAGE_EXTS = {
     ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff", ".webp", ".heic", ".heif", ".svg", ".raw", ".cr2", ".nef", ".arw", ".dng"
@@ -84,7 +84,11 @@ def classify_extension(path: str) -> str:
     return Path(path).suffix.lower()
 
 
-def scan_tree(root: Path, duplicate_scope: set[str]) -> ScanSummary:
+def scan_tree(
+    root: Path,
+    duplicate_scope: set[str],
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> ScanSummary:
     images = CategoryStats(paths=[])
     videos = CategoryStats(paths=[])
     audios = CategoryStats(paths=[])
@@ -151,6 +155,9 @@ def scan_tree(root: Path, duplicate_scope: set[str]) -> ScanSummary:
                         skipped_files += 1
         except (PermissionError, FileNotFoundError, NotADirectoryError):
             skipped_files += 1
+
+        if progress_callback is not None:
+            progress_callback(scanned_dirs, len(stack))
 
     duplicate_groups = []
     for size, paths in files_by_size.items():
@@ -303,7 +310,18 @@ def main() -> int:
     if args.duplicate_scope == "media":
         dup_scope = {"images", "videos", "audios"}
 
-    summary = scan_tree(target, dup_scope)
+    last_progress = -1
+
+    def show_progress(processed_dirs: int, pending_dirs: int) -> None:
+        nonlocal last_progress
+        total_known = processed_dirs + pending_dirs
+        progress = int((processed_dirs / total_known) * 100) if total_known else 100
+        if progress != last_progress:
+            print(f"\rScanning directory tree... {progress}%", end="", flush=True)
+            last_progress = progress
+
+    summary = scan_tree(target, dup_scope, progress_callback=show_progress)
+    print()
     mount_meta = mount_context(target)
     report_text = build_report(target, summary, mount_meta)
 
