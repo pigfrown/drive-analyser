@@ -36,3 +36,23 @@ Open `http://localhost:8000` and provide:
 pip install pytest
 pytest
 ```
+
+## Generate filesystem inventory reports
+
+Use `generate_drive_report.py` to scan a mount point/directory and create a timestamped report folder under `./reports` (in your current working directory, not the target path).
+
+```bash
+python generate_drive_report.py /mnt/your-drive
+# optional stable output folder name
+python generate_drive_report.py /mnt/your-drive --name my_drive_snapshot
+```
+
+Each report directory contains:
+- `all_image_paths`
+- `all_video_paths`
+- `all_audio_paths`
+- `all_git_repos`
+- `report`
+- `meta.json`
+
+The `report` includes mount identification (`findmnt`, `lsblk`, `blkid`), category totals, duplicate analysis for media files, and a broader extension-level overview of drive contents.
