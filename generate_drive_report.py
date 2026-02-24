@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import imghdr
 import json
+import mimetypes
 import os
 import shutil
 import subprocess
@@ -27,6 +29,12 @@ VIDEO_EXTS = {
 }
 AUDIO_EXTS = {
     ".mp3", ".flac", ".wav", ".aac", ".ogg", ".m4a", ".wma", ".alac", ".aiff", ".opus", ".mid", ".midi"
+}
+
+PROGRAM_ASSET_DIR_MARKERS = {
+    ".steam",
+    "steamapps",
+    ".minecraft",
 }
 
 
@@ -84,6 +92,67 @@ def classify_extension(path: str) -> str:
     return Path(path).suffix.lower()
 
 
+def looks_like_video(path: Path) -> bool:
+    try:
+        with path.open("rb") as f:
+            header = f.read(512)
+    except OSError:
+        return False
+
+    if len(header) < 12:
+        return False
+
+    if header[4:8] == b"ftyp":
+        return True
+    if header.startswith(b"\x1aE\xdf\xa3"):
+        return True
+    if header.startswith(b"RIFF") and header[8:12] == b"AVI ":
+        return True
+    if header.startswith(b"OggS"):
+        return True
+    if header.startswith(b"\x47"):
+        return True
+    return False
+
+
+def looks_like_audio(path: Path) -> bool:
+    try:
+        with path.open("rb") as f:
+            header = f.read(64)
+    except OSError:
+        return False
+
+    if header.startswith((b"ID3", b"fLaC", b"OggS", b"MThd")):
+        return True
+    if header.startswith(b"RIFF") and b"WAVE" in header[:16]:
+        return True
+    if header.startswith(b"\xff\xfb") or header.startswith(b"\xff\xf3"):
+        return True
+    if header.startswith(b"ADIF"):
+        return True
+    return False
+
+
+def classify_media_by_content(path: Path, ext: str) -> str | None:
+    ext_guess = mimetypes.guess_type(path.name)[0] or ""
+    if ext in IMAGE_EXTS:
+        return "images" if imghdr.what(path) else None
+    if ext in VIDEO_EXTS:
+        return "videos" if ext_guess.startswith("video/") and looks_like_video(path) else None
+    if ext in AUDIO_EXTS:
+        return "audios" if (ext_guess.startswith("audio/") or ext in {".mid", ".midi"}) and looks_like_audio(path) else None
+    return None
+
+
+def is_program_asset_image(path: Path) -> bool:
+    parts = [part.lower() for part in path.parts]
+    if any(marker in parts for marker in PROGRAM_ASSET_DIR_MARKERS):
+        return True
+    # Catch common Steam tree locations even when part names include platform-specific casing.
+    joined = "/".join(parts)
+    return "steam/steamapps" in joined or "minecraft/assets" in joined
+
+
 def scan_tree(
     root: Path,
     duplicate_scope: set[str],
@@ -133,15 +202,19 @@ def scan_tree(
                         ext_bytes[ext_key] += size
 
                         path_abs = os.path.abspath(entry.path)
-                        if ext in IMAGE_EXTS:
+                        path_obj = Path(path_abs)
+                        media_type = classify_media_by_content(path_obj, ext)
+                        if media_type == "images":
+                            if is_program_asset_image(path_obj):
+                                continue
                             images.add(path_abs, size)
                             if "images" in duplicate_scope:
                                 files_by_size[size].append(path_abs)
-                        elif ext in VIDEO_EXTS:
+                        elif media_type == "videos":
                             videos.add(path_abs, size)
                             if "videos" in duplicate_scope:
                                 files_by_size[size].append(path_abs)
-                        elif ext in AUDIO_EXTS:
+                        elif media_type == "audios":
                             audios.add(path_abs, size)
                             if "audios" in duplicate_scope:
                                 files_by_size[size].append(path_abs)
@@ -220,9 +293,13 @@ def top_extensions(ext_counts: Counter, ext_bytes: defaultdict[str, int], limit:
 
 
 def write_list(path: Path, values: Iterable[str]) -> None:
-    with path.open("w", encoding="utf-8") as f:
+    with path.open("w", encoding="utf-8", errors="backslashreplace") as f:
         for val in values:
             f.write(f"{val}\n")
+
+
+def write_text_safely(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8", errors="backslashreplace")
 
 
 def build_report(target: Path, summary: ScanSummary, mount_meta: dict[str, str]) -> str:
@@ -330,8 +407,9 @@ def main() -> int:
     write_list(out_dir / "all_audio_paths", summary.audios.paths)
     write_list(out_dir / "all_git_repos", summary.git_repos)
 
-    (out_dir / "report").write_text(report_text, encoding="utf-8")
-    (out_dir / "meta.json").write_text(
+    write_text_safely(out_dir / "report", report_text)
+    write_text_safely(
+        out_dir / "meta.json",
         json.dumps(
             {
                 "target": str(target.resolve()),
@@ -343,7 +421,6 @@ def main() -> int:
             indent=2,
         )
         + "\n",
-        encoding="utf-8",
     )
 
     print(f"Report generated at: {out_dir}")
